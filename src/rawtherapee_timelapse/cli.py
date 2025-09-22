@@ -227,7 +227,7 @@ class SimpleInterpolator:
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = self.directory / f"pp3_backup_{timestamp}"
+        backup_dir = self.directory / f"rawtherapee-timelapse_{timestamp}"
         backup_dir.mkdir(exist_ok=True)
 
         click.echo(f"Backing up {len(pp3_files)} PP3 files to {backup_dir.name}/")
@@ -243,20 +243,8 @@ class SimpleInterpolator:
         path: Path,
         frame_index: int,
         total_frames: int,
-    ) -> None:
+    ) -> configparser.RawConfigParser:
         """Write PP3 file with interpolated values and crop settings"""
-        if self.dry_run:
-            progress = frame_index / (total_frames - 1) if total_frames > 1 else 0
-            width, height = self.get_image_dimensions(config)
-            x, y, w, h = self.calculate_aspect_crop(width, height, progress)
-            zoom_factor = self.calculate_zoom_factor(progress)
-            zoom_info = f" Zoom={zoom_factor:.2f}x" if self.zoom else ""
-            click.echo(
-                f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f} "
-                f"Crop=[{x},{y},{w}x{h}]{zoom_info}"
-            )
-            return
-
         import copy
 
         new_config = copy.deepcopy(config)
@@ -287,7 +275,7 @@ class SimpleInterpolator:
         new_config.set("Crop", "Orientation", "As Image")
         new_config.set("Crop", "Guide", "Frame")
 
-        # Update Resize section for 4K output
+        # Update Resize section for output resolution
         if not new_config.has_section("Resize"):
             new_config.add_section("Resize")
 
@@ -305,8 +293,18 @@ class SimpleInterpolator:
             "Resize", "ShortEdge", str(min(self.output_width, self.output_height))
         )
 
-        with open(path, "w", encoding="utf-8") as f:
-            new_config.write(f)
+        if self.dry_run:
+            zoom_factor = self.calculate_zoom_factor(progress)
+            zoom_info = f" Zoom={zoom_factor:.2f}x" if self.zoom else ""
+            click.echo(
+                f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f} "
+                f"Crop=[{crop_x},{crop_y},{crop_w}x{crop_h}]{zoom_info}"
+            )
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                new_config.write(f)
+
+        return new_config
 
     def process(self) -> None:
         """Main processing"""
@@ -349,11 +347,13 @@ class SimpleInterpolator:
                     progress = (
                         frame_idx / (len(nef_files) - 1) if len(nef_files) > 1 else 0
                     )
-                    self.write_pp3(cfg, t, g, c, pp3, frame_idx, len(nef_files))
+                    updated_cfg = self.write_pp3(
+                        cfg, t, g, c, pp3, frame_idx, len(nef_files)
+                    )
                     keyframes.append(
                         {
                             "idx": frame_idx,
-                            "cfg": cfg,
+                            "cfg": updated_cfg,
                             "temp": t,
                             "green": g,
                             "comp": c,
@@ -456,8 +456,7 @@ class SimpleInterpolator:
 @click.argument(
     "directory",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
-    default=".",
-    required=False,
+    required=True,
 )
 @click.option("--dry-run", "-d", is_flag=True, help="Preview without creating files")
 @click.option(
