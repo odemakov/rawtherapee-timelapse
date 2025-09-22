@@ -115,11 +115,21 @@ class SimpleInterpolator:
         """Apply easing function to progress value"""
         if easing == "linear":
             return t
+        elif easing == "ease-in":
+            # Quadratic ease-in (slow start)
+            return t * t
+        elif easing == "ease-out":
+            # Quadratic ease-out (slow end)
+            return 1 - (1 - t) * (1 - t)
         elif easing == "ease-in-out":
             return self.ease_cubic(t)
         elif easing == "exponential":
             # Exponential ease-in-out
-            if t < 0.5:
+            if t <= 0:
+                return 0.0
+            elif t >= 1:
+                return 1.0
+            elif t < 0.5:
                 return 0.5 * (2 ** (20 * t - 10))
             else:
                 return 1 - 0.5 * (2 ** (-20 * t + 10))
@@ -269,9 +279,20 @@ class SimpleInterpolator:
         config = CaseSensitiveConfigParser()
         config.read(path, encoding="utf-8")
 
-        temp = config.getint("White Balance", "Temperature")
-        green = config.getfloat("White Balance", "Green")
-        comp = config.getfloat("Exposure", "Compensation")
+        try:
+            temp = config.getint("White Balance", "Temperature")
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            temp = 5500  # Default temperature
+
+        try:
+            green = config.getfloat("White Balance", "Green")
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            green = 1.0  # Default green
+
+        try:
+            comp = config.getfloat("Exposure", "Compensation")
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            comp = 0.0  # Default compensation
 
         # Validate
         if not self.TEMP_RANGE[0] <= temp <= self.TEMP_RANGE[1]:
