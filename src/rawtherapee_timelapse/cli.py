@@ -73,17 +73,41 @@ class SimpleInterpolator:
     def get_image_dimensions(
         self, config: configparser.RawConfigParser
     ) -> Tuple[int, int]:
-        """Extract image dimensions from PP3 Crop section"""
+        """Extract original image dimensions from PP3 file"""
         try:
-            # Get dimensions from Crop section
+            # First, check if we have stored original dimensions
+            if hasattr(self, "_original_width") and hasattr(self, "_original_height"):
+                return self._original_width, self._original_height
+
+            # If crop is disabled, W and H are the full image dimensions
+            crop_enabled = (
+                config.get("Crop", "Enabled", fallback="false").lower() == "true"
+            )
             width = config.getint("Crop", "W")
             height = config.getint("Crop", "H")
-            return width, height
+
+            if not crop_enabled:
+                # Store original dimensions for future use
+                self._original_width = width
+                self._original_height = height
+                return width, height
+
+            # If crop is enabled, we need to estimate the original dimensions
+            # For now, use common Nikon Z6 dimensions
+            click.echo(
+                "Warning: Crop is enabled in keyframe, using default dimensions. "
+                "For best results, disable crop in the first keyframe."
+            )
+            self._original_width = 6056
+            self._original_height = 4032
+            return 6056, 4032
         except:
             # Default to common Nikon Z6 dimensions if not found
             click.echo(
                 "Warning: Could not read image dimensions from PP3, using defaults"
             )
+            self._original_width = 6056
+            self._original_height = 4032
             return 6056, 4032
 
     def apply_easing(self, t: float, easing: str) -> float:
@@ -141,38 +165,37 @@ class SimpleInterpolator:
             crop_width = visible_width
             crop_height = target_height
 
-        # Calculate center crop position based on zoom anchor
-        if self.zoom_anchor == "center":
-            crop_x = (original_width - crop_width) // 2
-            crop_y = (original_height - crop_height) // 2
-        elif self.zoom_anchor == "top":
-            crop_x = (original_width - crop_width) // 2
-            crop_y = 0
-        elif self.zoom_anchor == "bottom":
-            crop_x = (original_width - crop_width) // 2
-            crop_y = original_height - crop_height
-        else:  # default to center
-            crop_x = (original_width - crop_width) // 2
-            crop_y = (original_height - crop_height) // 2
+        # Calculate horizontal position (always centered)
+        crop_x = (original_width - crop_width) // 2
 
-        # Apply aspect drift for vertical positioning
-        if crop_height < visible_height:
-            height_to_crop = visible_height - crop_height
+        # Calculate vertical position
+        available_drift = original_height - crop_height
 
-            if self.aspect_drift == "center":
-                drift_offset = 0
-            elif self.aspect_drift == "top":
-                drift_offset = -height_to_crop // 2
-            elif self.aspect_drift == "bottom":
-                drift_offset = height_to_crop // 2
-            elif self.aspect_drift == "top-to-bottom":
-                drift_offset = int(height_to_crop * (progress - 0.5))
-            elif self.aspect_drift == "bottom-to-top":
-                drift_offset = int(height_to_crop * (0.5 - progress))
+        # If zoom anchor is specified (not center), it takes precedence over aspect drift
+        if self.zoom_anchor != "center" and self.zoom_start != self.zoom_end:
+            # Zoom anchor controls the vertical position during zoom
+            if self.zoom_anchor == "top":
+                crop_y = 0
+            elif self.zoom_anchor == "bottom":
+                crop_y = available_drift
             else:
-                drift_offset = 0
-
-            crop_y = max(0, min(original_height - crop_height, crop_y + drift_offset))
+                crop_y = available_drift // 2
+        else:
+            # Aspect drift controls which part of the image to show when cropping to 16:9
+            if self.aspect_drift == "center":
+                crop_y = available_drift // 2
+            elif self.aspect_drift == "top":
+                crop_y = 0
+            elif self.aspect_drift == "bottom":
+                crop_y = available_drift
+            elif self.aspect_drift == "top-to-bottom":
+                # Start at top (show more ground), drift to bottom (show more sky)
+                crop_y = int(available_drift * progress)
+            elif self.aspect_drift == "bottom-to-top":
+                # Start at bottom (show more sky), drift to top (show more ground)
+                crop_y = int(available_drift * (1 - progress))
+            else:
+                crop_y = available_drift // 2
 
         # Ensure crop stays within image bounds
         crop_x = max(0, min(original_width - crop_width, crop_x))
