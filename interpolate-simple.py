@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Timelapse PP3 Interpolator
+Simple Timelapse PP3 Interpolator with Zoom Effects
 """
 
 import configparser
@@ -20,17 +20,73 @@ class CaseSensitiveConfigParser(configparser.RawConfigParser):
 
 
 class SimpleInterpolator:
-    """Lightweight PP3 interpolator without scipy dependency"""
+    """PP3 interpolator with zoom and aspect ratio effects"""
 
     # Validation ranges
     TEMP_RANGE = (2000, 10000)
     GREEN_RANGE = (0.1, 2.0)
     COMP_RANGE = (-5.0, 5.0)
 
-    def __init__(self, directory: Path, dry_run: bool = False, backup: bool = True):
+    def __init__(
+        self,
+        directory: Path,
+        dry_run: bool = False,
+        backup: bool = True,
+        aspect_drift: str = "center",
+    ):
         self.directory = directory
         self.dry_run = dry_run
         self.backup = backup
+        self.aspect_drift = aspect_drift
+
+    def get_image_dimensions(
+        self, config: configparser.RawConfigParser
+    ) -> Tuple[int, int]:
+        """Extract image dimensions from PP3 Crop section"""
+        try:
+            # Get dimensions from Crop section
+            width = config.getint("Crop", "W")
+            height = config.getint("Crop", "H")
+            return width, height
+        except:
+            # Default to common Nikon Z6 dimensions if not found
+            click.echo("⚠️  Could not read image dimensions from PP3, using defaults")
+            return 6056, 4032
+
+    def calculate_aspect_crop(
+        self, original_width: int, original_height: int, progress: float
+    ) -> Tuple[int, int, int, int]:
+        """Calculate crop parameters for 16:9 aspect ratio with drift"""
+
+        # Calculate 16:9 dimensions maintaining full width
+        target_height = int(original_width * 9 / 16)
+
+        # If original is already wider than 16:9, crop width instead
+        if original_height < target_height:
+            target_width = int(original_height * 16 / 9)
+            target_height = original_height
+            crop_x = (original_width - target_width) // 2
+            crop_y = 0
+            return crop_x, crop_y, target_width, target_height
+
+        # Calculate vertical crop needed
+        height_to_crop = original_height - target_height
+
+        # Calculate Y offset based on aspect_drift
+        if self.aspect_drift == "center":
+            y_offset = height_to_crop // 2
+        elif self.aspect_drift == "top":
+            y_offset = 0
+        elif self.aspect_drift == "bottom":
+            y_offset = height_to_crop
+        elif self.aspect_drift == "top-to-bottom":
+            y_offset = int(height_to_crop * progress)
+        elif self.aspect_drift == "bottom-to-top":
+            y_offset = int(height_to_crop * (1 - progress))
+        else:
+            y_offset = height_to_crop // 2  # Default to center
+
+        return 0, y_offset, original_width, target_height
 
     def parse_pp3(
         self, path: Path
@@ -85,20 +141,49 @@ class SimpleInterpolator:
         green: float,
         comp: float,
         path: Path,
+        frame_index: int,
+        total_frames: int,
     ) -> None:
-        """Write PP3 file with interpolated values"""
+        """Write PP3 file with interpolated values and crop settings"""
         if self.dry_run:
+            progress = frame_index / (total_frames - 1) if total_frames > 1 else 0
+            width, height = self.get_image_dimensions(config)
+            x, y, w, h = self.calculate_aspect_crop(width, height, progress)
             click.echo(
-                f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f}"
+                f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f} "
+                f"Crop=[{x},{y},{w}x{h}]"
             )
             return
 
         import copy
 
         new_config = copy.deepcopy(config)
+
+        # Set white balance and exposure
         new_config.set("White Balance", "Temperature", str(int(temp)))
         new_config.set("White Balance", "Green", f"{green:.3f}")
         new_config.set("Exposure", "Compensation", f"{comp:.3f}")
+
+        # Calculate and set crop parameters
+        progress = frame_index / (total_frames - 1) if total_frames > 1 else 0
+        width, height = self.get_image_dimensions(config)
+        crop_x, crop_y, crop_w, crop_h = self.calculate_aspect_crop(
+            width, height, progress
+        )
+
+        # Update Crop section
+        if not new_config.has_section("Crop"):
+            new_config.add_section("Crop")
+
+        new_config.set("Crop", "Enabled", "true")
+        new_config.set("Crop", "X", str(crop_x))
+        new_config.set("Crop", "Y", str(crop_y))
+        new_config.set("Crop", "W", str(crop_w))
+        new_config.set("Crop", "H", str(crop_h))
+        new_config.set("Crop", "FixedRatio", "true")
+        new_config.set("Crop", "Ratio", "16:9")
+        new_config.set("Crop", "Orientation", "As Image")
+        new_config.set("Crop", "Guide", "Frame")
 
         with open(path, "w", encoding="utf-8") as f:
             new_config.write(f)
@@ -117,6 +202,7 @@ class SimpleInterpolator:
             return
 
         click.echo(f"📸 Found {len(nef_files)} NEF files, {len(pp3_files)} keyframes")
+        click.echo(f"🎬 Aspect drift mode: {self.aspect_drift}")
 
         # Backup
         self.backup_pp3_files()
@@ -147,6 +233,18 @@ class SimpleInterpolator:
             return
 
         keyframes.sort(key=lambda k: k["idx"])
+
+        # Get image dimensions from first keyframe
+        first_width, first_height = self.get_image_dimensions(keyframes[0]["cfg"])
+        click.echo(f"📐 Image dimensions: {first_width}x{first_height}")
+
+        # Calculate 16:9 crop info
+        target_height = int(first_width * 9 / 16)
+        height_loss = first_height - target_height
+        click.echo(
+            f"✂️  16:9 crop: {first_width}x{target_height} (losing {height_loss}px height)"
+        )
+
         click.echo("\n🔑 Keyframes:")
         for kf in keyframes:
             click.echo(
@@ -155,6 +253,7 @@ class SimpleInterpolator:
 
         # Process each frame
         created = 0
+        total_frames = len(nef_files)
         click.echo(f"\n{'🔄' if not self.dry_run else '👁️ '} Processing...")
 
         for i, nef in enumerate(nef_files):
@@ -205,14 +304,14 @@ class SimpleInterpolator:
             green = self.clamp(green, *self.GREEN_RANGE)
             comp = self.clamp(comp, *self.COMP_RANGE)
 
-            # Write file
-            self.write_pp3(cfg, temp, green, comp, pp3_path)
+            # Write file with crop settings
+            self.write_pp3(cfg, temp, green, comp, pp3_path, i, total_frames)
             created += 1
 
             if created % 100 == 0 and not self.dry_run:
                 click.echo(f"   Progress: {created} files...")
 
-        click.echo(f"\n✅ Done! Created {created} PP3 files")
+        click.echo(f"\n✅ Done! Created {created} PP3 files with 16:9 crop")
         if self.dry_run:
             click.echo("   (This was a dry run - no files created)")
 
@@ -231,25 +330,41 @@ class SimpleInterpolator:
     default=True,
     help="Backup existing PP3 files (default: backup)",
 )
-def main(directory: Path, dry_run: bool, backup: bool):
+@click.option(
+    "--aspect-drift",
+    type=click.Choice(["center", "top", "bottom", "top-to-bottom", "bottom-to-top"]),
+    default="center",
+    help="How to crop from 3:2 to 16:9 aspect ratio",
+)
+def main(directory: Path, dry_run: bool, backup: bool, aspect_drift: str):
     """
-    Interpolate RawTherapee PP3 settings for timelapse sequences.
+    Interpolate RawTherapee PP3 settings for timelapse sequences with zoom effects.
 
-    This tool creates smooth transitions between keyframe PP3 files
-    by interpolating Temperature, Green/Tint, and Exposure values.
+    This tool creates smooth transitions between keyframe PP3 files by interpolating
+    Temperature, Green/Tint, and Exposure values. It also crops images to 16:9 aspect
+    ratio for 4K video output.
 
-    Example:
+    Aspect drift modes:
 
-        # Preview what will be done
+    \b
+    - center:         Always crop equally from top and bottom
+    - top:            Keep top, crop bottom only
+    - bottom:         Keep bottom, crop top only
+    - top-to-bottom:  Start at top, drift to bottom
+    - bottom-to-top:  Start at bottom, drift to top
+
+    Examples:
+
+        # Preview with center crop
         python interpolate_simple.py --dry-run
 
-        # Process current directory
-        python interpolate_simple.py
+        # Create dramatic sunrise effect
+        python interpolate_simple.py --aspect-drift bottom-to-top
 
-        # Process specific directory without backup
-        python interpolate_simple.py /path/to/images --no-backup
+        # Process specific directory
+        python interpolate_simple.py /path/to/images --aspect-drift top-to-bottom
     """
-    interpolator = SimpleInterpolator(directory, dry_run, backup)
+    interpolator = SimpleInterpolator(directory, dry_run, backup, aspect_drift)
     interpolator.process()
 
 
