@@ -1,0 +1,34 @@
+services:
+  # Basic RawTherapee CLI service
+  rawtherapee:
+    build: .
+    volumes:
+      - ${INPUT_DIR:-./input}:/workspace/input:ro    # Mount input directory (read-only)
+      - ${OUTPUT_DIR:-./output}:/workspace/output     # Mount output directory
+    working_dir: /workspace
+    user: "1000:1000"  # Match your local user ID
+    command: ["rawtherapee-cli", "-o", "/workspace/output", "-j95", "-Y", "-s", "-c", "/workspace/input"]
+
+  # Interactive shell for testing
+  rawtherapee-shell:
+    build: .
+    volumes:
+      - ${INPUT_DIR:-./input}:/workspace/input:ro
+      - ${OUTPUT_DIR:-./output}:/workspace/output
+    working_dir: /workspace
+    user: "1000:1000"
+    command: ["bash"]
+    stdin_open: true
+    tty: true
+
+  # Service for running rawtherapee-timelapse
+  timelapse:
+    build: .
+    volumes:
+      - ${INPUT_DIR:-./input}:/workspace/input
+      - ${OUTPUT_DIR:-./output}:/workspace/output
+    working_dir: /workspace
+    user: "1000:1000"
+    environment:
+      - PYTHONPATH=/app
+    command: ["python", "-m", "rawtherapee_timelapse.cli", "/workspace/input"]

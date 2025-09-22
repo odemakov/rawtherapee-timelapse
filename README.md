@@ -39,8 +39,27 @@ rawtherapee-timelapse /path/to/images --zoom in --zoom-level 80-100
 rawtherapee-timelapse /path/to/images --output 6k --zoom out --zoom-level 70-100 --zoom-anchor top --zoom-easing exponential
 ```
 
+## Docker Usage (for macOS)
+
+Since `rawtherapee-cli` doesn't work on macOS, use Docker:
+
+```bash
+# Using docker compose directly
+INPUT_DIR=/path/to/images OUTPUT_DIR=/path/to/output docker compose run rawtherapee-shell
+
+# Using the wrapper script
+./run-docker.sh -i /path/to/images -o /path/to/output -s rawtherapee-shell
+
+# Run rawtherapee-cli on all files
+./run-docker.sh -i ~/Photos/raw -o ~/Photos/processed -s rawtherapee
+
+# Run timelapse interpolation
+./run-docker.sh -i ~/Photos/timelapse -s timelapse
+```
+
 ## Requirements
 
 - Python 3.8+
 - RawTherapee (for editing keyframes)
 - NEF files with corresponding PP3 keyframes
+- Docker (for macOS users)
