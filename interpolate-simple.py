@@ -50,7 +50,9 @@ class SimpleInterpolator:
             return width, height
         except:
             # Default to common Nikon Z6 dimensions if not found
-            click.echo("⚠️  Could not read image dimensions from PP3, using defaults")
+            click.echo(
+                "Warning: Could not read image dimensions from PP3, using defaults"
+            )
             return 6056, 4032
 
     def calculate_aspect_crop(
@@ -101,11 +103,11 @@ class SimpleInterpolator:
 
         # Validate
         if not self.TEMP_RANGE[0] <= temp <= self.TEMP_RANGE[1]:
-            click.echo(f"⚠️  {path.name}: Temperature {temp}K outside range")
+            click.echo(f"Warning: {path.name}: Temperature {temp}K outside range")
         if not self.GREEN_RANGE[0] <= green <= self.GREEN_RANGE[1]:
-            click.echo(f"⚠️  {path.name}: Green {green} outside range")
+            click.echo(f"Warning: {path.name}: Green {green} outside range")
         if not self.COMP_RANGE[0] <= comp <= self.COMP_RANGE[1]:
-            click.echo(f"⚠️  {path.name}: Compensation {comp} outside range")
+            click.echo(f"Warning: {path.name}: Compensation {comp} outside range")
 
         return config, temp, green, comp
 
@@ -130,7 +132,7 @@ class SimpleInterpolator:
         backup_dir = self.directory / f"pp3_backup_{timestamp}"
         backup_dir.mkdir(exist_ok=True)
 
-        click.echo(f"📁 Backing up {len(pp3_files)} PP3 files to {backup_dir.name}/")
+        click.echo(f"Backing up {len(pp3_files)} PP3 files to {backup_dir.name}/")
         for pp3 in pp3_files:
             shutil.copy2(pp3, backup_dir / pp3.name)
 
@@ -195,14 +197,14 @@ class SimpleInterpolator:
         pp3_files = sorted(self.directory.glob("*.NEF.pp3"))
 
         if not nef_files:
-            click.echo("❌ No NEF files found")
+            click.echo("Error: No NEF files found")
             return
         if not pp3_files:
-            click.echo("❌ No PP3 keyframes found")
+            click.echo("Error: No PP3 keyframes found")
             return
 
-        click.echo(f"📸 Found {len(nef_files)} NEF files, {len(pp3_files)} keyframes")
-        click.echo(f"🎬 Aspect drift mode: {self.aspect_drift}")
+        click.echo(f"Found {len(nef_files)} NEF files, {len(pp3_files)} keyframes")
+        click.echo(f"Aspect drift mode: {self.aspect_drift}")
 
         # Backup
         self.backup_pp3_files()
@@ -216,9 +218,15 @@ class SimpleInterpolator:
             if nef_name in nef_to_idx:
                 try:
                     cfg, t, g, c = self.parse_pp3(pp3)
+                    # Apply crop to keyframe PP3 files
+                    frame_idx = nef_to_idx[nef_name]
+                    progress = (
+                        frame_idx / (len(nef_files) - 1) if len(nef_files) > 1 else 0
+                    )
+                    self.write_pp3(cfg, t, g, c, pp3, frame_idx, len(nef_files))
                     keyframes.append(
                         {
-                            "idx": nef_to_idx[nef_name],
+                            "idx": frame_idx,
                             "cfg": cfg,
                             "temp": t,
                             "green": g,
@@ -226,26 +234,26 @@ class SimpleInterpolator:
                         }
                     )
                 except Exception as e:
-                    click.echo(f"❌ Error parsing {pp3.name}: {e}")
+                    click.echo(f"Error parsing {pp3.name}: {e}")
 
         if not keyframes:
-            click.echo("❌ No valid keyframes")
+            click.echo("Error: No valid keyframes")
             return
 
         keyframes.sort(key=lambda k: k["idx"])
 
         # Get image dimensions from first keyframe
         first_width, first_height = self.get_image_dimensions(keyframes[0]["cfg"])
-        click.echo(f"📐 Image dimensions: {first_width}x{first_height}")
+        click.echo(f"Image dimensions: {first_width}x{first_height}")
 
         # Calculate 16:9 crop info
         target_height = int(first_width * 9 / 16)
         height_loss = first_height - target_height
         click.echo(
-            f"✂️  16:9 crop: {first_width}x{target_height} (losing {height_loss}px height)"
+            f"16:9 crop: {first_width}x{target_height} (losing {height_loss}px height)"
         )
 
-        click.echo("\n🔑 Keyframes:")
+        click.echo("\nKeyframes:")
         for kf in keyframes:
             click.echo(
                 f"   Frame {kf['idx']:4d}: T={kf['temp']} G={kf['green']:.3f} C={kf['comp']:+.2f}"
@@ -254,7 +262,9 @@ class SimpleInterpolator:
         # Process each frame
         created = 0
         total_frames = len(nef_files)
-        click.echo(f"\n{'🔄' if not self.dry_run else '👁️ '} Processing...")
+        click.echo(
+            f"\n{'Processing...' if not self.dry_run else 'Dry run processing...'}"
+        )
 
         for i, nef in enumerate(nef_files):
             pp3_path = nef.parent / f"{nef.name}.pp3"
@@ -311,7 +321,7 @@ class SimpleInterpolator:
             if created % 100 == 0 and not self.dry_run:
                 click.echo(f"   Progress: {created} files...")
 
-        click.echo(f"\n✅ Done! Created {created} PP3 files with 16:9 crop")
+        click.echo(f"\nDone! Created {created} PP3 files with 16:9 crop")
         if self.dry_run:
             click.echo("   (This was a dry run - no files created)")
 
