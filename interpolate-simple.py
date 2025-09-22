@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Simple Timelapse PP3 Interpolator - No external dependencies
+Simple Timelapse PP3 Interpolator
 """
 
-import argparse
 import configparser
-import copy
 import shutil
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple
+
+import click
 
 
 class CaseSensitiveConfigParser(configparser.RawConfigParser):
@@ -35,7 +34,7 @@ class SimpleInterpolator:
 
     def parse_pp3(
         self, path: Path
-    ) -> Tuple[configparser.ConfigParser, float, float, float]:
+    ) -> Tuple[configparser.RawConfigParser, float, float, float]:
         """Parse PP3 file and validate values"""
         config = CaseSensitiveConfigParser()
         config.read(path, encoding="utf-8")
@@ -46,11 +45,11 @@ class SimpleInterpolator:
 
         # Validate
         if not self.TEMP_RANGE[0] <= temp <= self.TEMP_RANGE[1]:
-            print(f"⚠️  {path.name}: Temperature {temp}K outside range")
+            click.echo(f"⚠️  {path.name}: Temperature {temp}K outside range")
         if not self.GREEN_RANGE[0] <= green <= self.GREEN_RANGE[1]:
-            print(f"⚠️  {path.name}: Green {green} outside range")
+            click.echo(f"⚠️  {path.name}: Green {green} outside range")
         if not self.COMP_RANGE[0] <= comp <= self.COMP_RANGE[1]:
-            print(f"⚠️  {path.name}: Compensation {comp} outside range")
+            click.echo(f"⚠️  {path.name}: Compensation {comp} outside range")
 
         return config, temp, green, comp
 
@@ -75,13 +74,13 @@ class SimpleInterpolator:
         backup_dir = self.directory / f"pp3_backup_{timestamp}"
         backup_dir.mkdir(exist_ok=True)
 
-        print(f"📁 Backing up {len(pp3_files)} PP3 files to {backup_dir.name}/")
+        click.echo(f"📁 Backing up {len(pp3_files)} PP3 files to {backup_dir.name}/")
         for pp3 in pp3_files:
             shutil.copy2(pp3, backup_dir / pp3.name)
 
     def write_pp3(
         self,
-        config: CaseSensitiveConfigParser,
+        config: configparser.RawConfigParser,
         temp: float,
         green: float,
         comp: float,
@@ -89,8 +88,12 @@ class SimpleInterpolator:
     ) -> None:
         """Write PP3 file with interpolated values"""
         if self.dry_run:
-            print(f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f}")
+            click.echo(
+                f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f}"
+            )
             return
+
+        import copy
 
         new_config = copy.deepcopy(config)
         new_config.set("White Balance", "Temperature", str(int(temp)))
@@ -107,13 +110,13 @@ class SimpleInterpolator:
         pp3_files = sorted(self.directory.glob("*.NEF.pp3"))
 
         if not nef_files:
-            print("❌ No NEF files found")
+            click.echo("❌ No NEF files found")
             return
         if not pp3_files:
-            print("❌ No PP3 keyframes found")
+            click.echo("❌ No PP3 keyframes found")
             return
 
-        print(f"📸 Found {len(nef_files)} NEF files, {len(pp3_files)} keyframes")
+        click.echo(f"📸 Found {len(nef_files)} NEF files, {len(pp3_files)} keyframes")
 
         # Backup
         self.backup_pp3_files()
@@ -137,22 +140,22 @@ class SimpleInterpolator:
                         }
                     )
                 except Exception as e:
-                    print(f"❌ Error parsing {pp3.name}: {e}")
+                    click.echo(f"❌ Error parsing {pp3.name}: {e}")
 
         if not keyframes:
-            print("❌ No valid keyframes")
+            click.echo("❌ No valid keyframes")
             return
 
         keyframes.sort(key=lambda k: k["idx"])
-        print("\n🔑 Keyframes:")
+        click.echo("\n🔑 Keyframes:")
         for kf in keyframes:
-            print(
+            click.echo(
                 f"   Frame {kf['idx']:4d}: T={kf['temp']} G={kf['green']:.3f} C={kf['comp']:+.2f}"
             )
 
         # Process each frame
         created = 0
-        print(f"\n{'🔄' if not self.dry_run else '👁️ '} Processing...")
+        click.echo(f"\n{'🔄' if not self.dry_run else '👁️ '} Processing...")
 
         for i, nef in enumerate(nef_files):
             pp3_path = nef.parent / f"{nef.name}.pp3"
@@ -207,43 +210,46 @@ class SimpleInterpolator:
             created += 1
 
             if created % 100 == 0 and not self.dry_run:
-                print(f"   Progress: {created} files...")
+                click.echo(f"   Progress: {created} files...")
 
-        print(f"\n✅ Done! Created {created} PP3 files")
+        click.echo(f"\n✅ Done! Created {created} PP3 files")
         if self.dry_run:
-            print("   (This was a dry run - no files created)")
+            click.echo("   (This was a dry run - no files created)")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Simple PP3 interpolator for timelapses",
-        epilog="Example: %(prog)s /path/to/timelapse --dry-run",
-    )
-    parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        help="Directory with NEF files (default: current)",
-    )
-    parser.add_argument(
-        "-d", "--dry-run", action="store_true", help="Preview without creating files"
-    )
-    parser.add_argument(
-        "-n",
-        "--no-backup",
-        dest="backup",
-        action="store_false",
-        help="Skip backup of existing PP3 files",
-    )
+@click.command()
+@click.argument(
+    "directory",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=".",
+    required=False,
+)
+@click.option("--dry-run", "-d", is_flag=True, help="Preview without creating files")
+@click.option(
+    "--backup/--no-backup",
+    "-b/-B",
+    default=True,
+    help="Backup existing PP3 files (default: backup)",
+)
+def main(directory: Path, dry_run: bool, backup: bool):
+    """
+    Interpolate RawTherapee PP3 settings for timelapse sequences.
 
-    args = parser.parse_args()
+    This tool creates smooth transitions between keyframe PP3 files
+    by interpolating Temperature, Green/Tint, and Exposure values.
 
-    directory = Path(args.directory)
-    if not directory.is_dir():
-        print(f"❌ Error: {directory} is not a directory")
-        sys.exit(1)
+    Example:
 
-    interpolator = SimpleInterpolator(directory, args.dry_run, args.backup)
+        # Preview what will be done
+        python interpolate_simple.py --dry-run
+
+        # Process current directory
+        python interpolate_simple.py
+
+        # Process specific directory without backup
+        python interpolate_simple.py /path/to/images --no-backup
+    """
+    interpolator = SimpleInterpolator(directory, dry_run, backup)
     interpolator.process()
 
 
