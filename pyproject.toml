@@ -1,0 +1,20 @@
+[project]
+name = "rawtherapee-timelapse"
+version = "0.1.0"
+description = "Interpolate RawTherapee PP3 settings for smooth timelapse sequences with zoom and aspect ratio effects"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Oleg Demakov", email = "odemakov@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.0.0",
+]
+
+[project.scripts]
+rawtherapee-timelapse = "rawtherapee_timelapse.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
