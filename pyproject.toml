@@ -12,6 +12,11 @@ dependencies = [
     "click>=8.0.0",
 ]
 
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest>=7.0.0",
+]
+
 [project.scripts]
 rawtherapee-timelapse = "rawtherapee_timelapse.cli:main"
 

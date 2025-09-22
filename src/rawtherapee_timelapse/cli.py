@@ -3,6 +3,7 @@ Simple Timelapse PP3 Interpolator with Zoom Effects
 """
 
 import configparser
+import copy
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -142,64 +143,122 @@ class SimpleInterpolator:
         # Return the field of view as a factor (1.0 = 100% = full view, 0.7 = 70% = zoomed in)
         return current_fov
 
+    def calculate_16_9_crop(
+        self, width: int, height: int, drift_mode: str, progress: float = 0.0
+    ) -> Tuple[int, int, int, int]:
+        """Calculate 16:9 crop from any aspect ratio image.
+
+        Args:
+            width: Original image width
+            height: Original image height
+            drift_mode: How to position the crop ('center', 'top', 'bottom', 'top-to-bottom', 'bottom-to-top')
+            progress: Progress through the sequence (0.0 to 1.0) for animated drift
+
+        Returns:
+            Tuple of (x, y, crop_width, crop_height) for the 16:9 crop
+        """
+        # Calculate 16:9 dimensions
+        target_height = int(width * 9 / 16)
+
+        # If image is already wider than 16:9, crop width instead
+        if height < target_height:
+            crop_width = int(height * 16 / 9)
+            crop_height = height
+        else:
+            crop_width = width
+            crop_height = target_height
+
+        # Horizontal position is always centered
+        crop_x = (width - crop_width) // 2
+
+        # Calculate vertical position based on drift mode
+        available_drift = height - crop_height
+
+        if drift_mode == "center":
+            crop_y = available_drift // 2
+        elif drift_mode == "top":
+            crop_y = 0
+        elif drift_mode == "bottom":
+            crop_y = available_drift
+        elif drift_mode == "top-to-bottom":
+            # Start at top, drift to bottom over time
+            crop_y = int(available_drift * progress)
+        elif drift_mode == "bottom-to-top":
+            # Start at bottom, drift to top over time
+            crop_y = int(available_drift * (1 - progress))
+        else:
+            crop_y = available_drift // 2
+
+        return crop_x, crop_y, crop_width, crop_height
+
+    def apply_zoom_to_crop(
+        self,
+        crop_x: int,
+        crop_y: int,
+        crop_width: int,
+        crop_height: int,
+        original_width: int,
+        original_height: int,
+        fov_factor: float,
+        anchor: str,
+    ) -> Tuple[int, int, int, int]:
+        """Apply zoom effect to an existing crop.
+
+        Args:
+            crop_x, crop_y, crop_width, crop_height: Current crop parameters
+            original_width, original_height: Original image dimensions
+            fov_factor: Field of view factor (1.0 = 100%, 0.8 = 80%)
+            anchor: Zoom anchor point ('center', 'top', 'bottom')
+
+        Returns:
+            Tuple of (x, y, width, height) for the zoomed crop
+        """
+        # Calculate new crop size based on FOV
+        new_crop_width = int(crop_width * fov_factor)
+        new_crop_height = int(crop_height * fov_factor)
+
+        # Calculate position based on anchor
+        if anchor == "top":
+            new_crop_x = crop_x + (crop_width - new_crop_width) // 2
+            new_crop_y = crop_y
+        elif anchor == "bottom":
+            new_crop_x = crop_x + (crop_width - new_crop_width) // 2
+            new_crop_y = crop_y + (crop_height - new_crop_height)
+        else:  # center
+            new_crop_x = crop_x + (crop_width - new_crop_width) // 2
+            new_crop_y = crop_y + (crop_height - new_crop_height) // 2
+
+        # Ensure crop stays within image bounds
+        new_crop_x = max(0, min(original_width - new_crop_width, new_crop_x))
+        new_crop_y = max(0, min(original_height - new_crop_height, new_crop_y))
+
+        return new_crop_x, new_crop_y, new_crop_width, new_crop_height
+
     def calculate_aspect_crop(
         self, original_width: int, original_height: int, progress: float
     ) -> Tuple[int, int, int, int]:
         """Calculate crop parameters for 16:9 aspect ratio with drift and zoom"""
 
-        # Get field of view factor (1.0 = 100% = full view, 0.7 = 70% = zoomed in)
-        fov_factor = self.calculate_zoom_factor(progress)
+        # Stage 1: Calculate 16:9 crop with aspect drift
+        crop_x, crop_y, crop_width, crop_height = self.calculate_16_9_crop(
+            original_width, original_height, self.aspect_drift, progress
+        )
 
-        # Calculate the dimensions we want to show (field of view)
-        visible_width = int(original_width * fov_factor)
-        visible_height = int(original_height * fov_factor)
-
-        # Calculate 16:9 dimensions from visible size
-        target_height = int(visible_width * 9 / 16)
-
-        # If visible area is already wider than 16:9, crop width instead
-        if visible_height < target_height:
-            crop_width = int(visible_height * 16 / 9)
-            crop_height = visible_height
-        else:
-            crop_width = visible_width
-            crop_height = target_height
-
-        # Calculate horizontal position (always centered)
-        crop_x = (original_width - crop_width) // 2
-
-        # Calculate vertical position
-        available_drift = original_height - crop_height
-
-        # If zoom anchor is specified (not center), it takes precedence over aspect drift
-        if self.zoom_anchor != "center" and self.zoom_start != self.zoom_end:
-            # Zoom anchor controls the vertical position during zoom
-            if self.zoom_anchor == "top":
-                crop_y = 0
-            elif self.zoom_anchor == "bottom":
-                crop_y = available_drift
-            else:
-                crop_y = available_drift // 2
-        else:
-            # Aspect drift controls which part of the image to show when cropping to 16:9
-            if self.aspect_drift == "center":
-                crop_y = available_drift // 2
-            elif self.aspect_drift == "top":
-                crop_y = 0
-            elif self.aspect_drift == "bottom":
-                crop_y = available_drift
-            elif self.aspect_drift == "top-to-bottom":
-                # Start at top (show more ground), drift to bottom (show more sky)
-                crop_y = int(available_drift * progress)
-            elif self.aspect_drift == "bottom-to-top":
-                # Start at bottom (show more sky), drift to top (show more ground)
-                crop_y = int(available_drift * (1 - progress))
-            else:
-                crop_y = available_drift // 2
-
-        # Ensure crop stays within image bounds
-        crop_x = max(0, min(original_width - crop_width, crop_x))
-        crop_y = max(0, min(original_height - crop_height, crop_y))
+        # Stage 2: Apply zoom effect if needed
+        if self.zoom_start != self.zoom_end:
+            fov_factor = self.calculate_zoom_factor(progress)
+            # When zooming, zoom anchor takes precedence over aspect drift for positioning
+            anchor = self.zoom_anchor if self.zoom_anchor != "center" else "center"
+            crop_x, crop_y, crop_width, crop_height = self.apply_zoom_to_crop(
+                crop_x,
+                crop_y,
+                crop_width,
+                crop_height,
+                original_width,
+                original_height,
+                fov_factor,
+                anchor,
+            )
 
         return crop_x, crop_y, crop_width, crop_height
 
@@ -260,7 +319,6 @@ class SimpleInterpolator:
         total_frames: int,
     ) -> configparser.RawConfigParser:
         """Write PP3 file with interpolated values and crop settings"""
-        import copy
 
         new_config = copy.deepcopy(config)
 
