@@ -42,8 +42,7 @@ class SimpleInterpolator:
         dry_run: bool = False,
         backup: bool = True,
         aspect_drift: str = "center",
-        zoom: str = None,
-        zoom_level: str = None,
+        zoom_level: str = "100-100",
         zoom_anchor: str = "center",
         zoom_easing: str = "linear",
         output: str = "4k",
@@ -52,7 +51,6 @@ class SimpleInterpolator:
         self.dry_run = dry_run
         self.backup = backup
         self.aspect_drift = aspect_drift
-        self.zoom = zoom
         self.zoom_anchor = zoom_anchor
         self.zoom_easing = zoom_easing
 
@@ -64,15 +62,13 @@ class SimpleInterpolator:
             self.output_width, self.output_height = self.RESOLUTIONS["4k"]
 
         # Parse zoom level range
-        if zoom_level:
-            parts = zoom_level.split("-")
-            if len(parts) == 2:
-                self.zoom_min = float(parts[0]) / 100.0
-                self.zoom_max = float(parts[1]) / 100.0
-            else:
-                self.zoom_min = self.zoom_max = float(parts[0]) / 100.0
+        parts = zoom_level.split("-")
+        if len(parts) == 2:
+            self.zoom_start = float(parts[0]) / 100.0
+            self.zoom_end = float(parts[1]) / 100.0
         else:
-            self.zoom_min = self.zoom_max = 1.0
+            # Single value means no zoom
+            self.zoom_start = self.zoom_end = float(parts[0]) / 100.0
 
     def get_image_dimensions(
         self, config: configparser.RawConfigParser
@@ -107,45 +103,43 @@ class SimpleInterpolator:
 
     def calculate_zoom_factor(self, progress: float) -> float:
         """Calculate zoom factor based on progress and settings"""
-        if not self.zoom:
+        # No zoom if start and end are the same
+        if self.zoom_start == self.zoom_end:
             return 1.0
 
         # Apply easing to progress
         eased_progress = self.apply_easing(progress, self.zoom_easing)
 
-        # Calculate zoom factor
-        if self.zoom == "in":
-            # Start at min zoom, end at max zoom (zooming in)
-            return self.zoom_min + (self.zoom_max - self.zoom_min) * eased_progress
-        else:  # zoom == "out"
-            # Start at max zoom, end at min zoom (zooming out)
-            return self.zoom_max - (self.zoom_max - self.zoom_min) * eased_progress
+        # Interpolate between start and end field of view percentage
+        current_fov = (
+            self.zoom_start + (self.zoom_end - self.zoom_start) * eased_progress
+        )
+
+        # Return the field of view as a factor (1.0 = 100% = full view, 0.7 = 70% = zoomed in)
+        return current_fov
 
     def calculate_aspect_crop(
         self, original_width: int, original_height: int, progress: float
     ) -> Tuple[int, int, int, int]:
         """Calculate crop parameters for 16:9 aspect ratio with drift and zoom"""
 
-        # Apply zoom factor
-        zoom_factor = self.calculate_zoom_factor(progress)
+        # Get field of view factor (1.0 = 100% = full view, 0.7 = 70% = zoomed in)
+        fov_factor = self.calculate_zoom_factor(progress)
 
-        # Calculate zoomed dimensions
-        zoomed_width = int(original_width * zoom_factor)
-        zoomed_height = int(original_height * zoom_factor)
+        # Calculate the dimensions we want to show (field of view)
+        visible_width = int(original_width * fov_factor)
+        visible_height = int(original_height * fov_factor)
 
-        # Calculate 16:9 dimensions from zoomed size
-        target_height = int(zoomed_width * 9 / 16)
+        # Calculate 16:9 dimensions from visible size
+        target_height = int(visible_width * 9 / 16)
 
-        # If zoomed image is already wider than 16:9, crop width instead
-        if zoomed_height < target_height:
-            target_width = int(zoomed_height * 16 / 9)
-            target_height = zoomed_height
+        # If visible area is already wider than 16:9, crop width instead
+        if visible_height < target_height:
+            crop_width = int(visible_height * 16 / 9)
+            crop_height = visible_height
         else:
-            target_width = zoomed_width
-
-        # Calculate the area to crop from original image
-        crop_width = int(target_width / zoom_factor)
-        crop_height = int(target_height / zoom_factor)
+            crop_width = visible_width
+            crop_height = target_height
 
         # Calculate center crop position based on zoom anchor
         if self.zoom_anchor == "center":
@@ -162,10 +156,8 @@ class SimpleInterpolator:
             crop_y = (original_height - crop_height) // 2
 
         # Apply aspect drift for vertical positioning
-        if target_height < zoomed_height:
-            height_to_crop = crop_height - int(
-                crop_height * target_height / zoomed_height
-            )
+        if crop_height < visible_height:
+            height_to_crop = visible_height - crop_height
 
             if self.aspect_drift == "center":
                 drift_offset = 0
@@ -294,8 +286,12 @@ class SimpleInterpolator:
         )
 
         if self.dry_run:
-            zoom_factor = self.calculate_zoom_factor(progress)
-            zoom_info = f" Zoom={zoom_factor:.2f}x" if self.zoom else ""
+            if self.zoom_start != self.zoom_end:
+                fov_factor = self.calculate_zoom_factor(progress)
+                fov_percentage = int(fov_factor * 100)
+                zoom_info = f" FOV={fov_percentage}%"
+            else:
+                zoom_info = ""
             click.echo(
                 f"  [DRY] {path.name}: T={int(temp)} G={green:.3f} C={comp:+.2f} "
                 f"Crop=[{crop_x},{crop_y},{crop_w}x{crop_h}]{zoom_info}"
@@ -322,10 +318,8 @@ class SimpleInterpolator:
         click.echo(f"Found {len(nef_files)} NEF files, {len(pp3_files)} keyframes")
         click.echo(f"Output resolution: {self.output_width}x{self.output_height}")
         click.echo(f"Aspect drift mode: {self.aspect_drift}")
-        if self.zoom:
-            zoom_info = (
-                f"{self.zoom} ({int(self.zoom_min * 100)}-{int(self.zoom_max * 100)}%)"
-            )
+        if self.zoom_start != self.zoom_end:
+            zoom_info = f"{int(self.zoom_start * 100)}-{int(self.zoom_end * 100)}%"
             click.echo(
                 f"Zoom: {zoom_info}, anchor: {self.zoom_anchor}, easing: {self.zoom_easing}"
             )
@@ -472,16 +466,10 @@ class SimpleInterpolator:
     help="How to crop from 3:2 to 16:9 aspect ratio",
 )
 @click.option(
-    "--zoom",
-    type=click.Choice(["in", "out"]),
-    default=None,
-    help="Zoom direction (in: zoom into image, out: zoom out from image)",
-)
-@click.option(
     "--zoom-level",
     type=str,
-    default=None,
-    help="Zoom level range as min-max percentage (e.g., '70-100')",
+    default="100-100",
+    help="Field of view percentage range (e.g., '100-70' for zoom in, '80-100' for zoom out). 100 = full view, <100 = cropped/zoomed",
 )
 @click.option(
     "--zoom-anchor",
@@ -506,7 +494,6 @@ def main(
     dry_run: bool,
     backup: bool,
     aspect_drift: str,
-    zoom: str,
     zoom_level: str,
     zoom_anchor: str,
     zoom_easing: str,
@@ -549,18 +536,17 @@ def main(
         # Process for 8K output
         python interpolate_simple.py /path/to/images --output 8k
 
-        # Add zoom in effect from 80% to 100% for 5K
-        python interpolate_simple.py --zoom in --zoom-level 80-100 --output 5k
+        # Add zoom in effect from 100% view to 70% view for 5K
+        python interpolate_simple.py --zoom-level 100-70 --output 5k
 
         # Zoom out with exponential easing, anchored at top, 4K output
-        python interpolate_simple.py --zoom out --zoom-level 70-100 --zoom-anchor top --zoom-easing exponential
+        python interpolate_simple.py --zoom-level 80-100 --zoom-anchor top --zoom-easing exponential
     """
     interpolator = SimpleInterpolator(
         directory,
         dry_run,
         backup,
         aspect_drift,
-        zoom,
         zoom_level,
         zoom_anchor,
         zoom_easing,
