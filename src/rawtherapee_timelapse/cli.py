@@ -5,7 +5,6 @@ Simple Timelapse PP3 Interpolator with Zoom Effects
 import configparser
 import copy
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Tuple
 
@@ -72,7 +71,7 @@ class SimpleInterpolator:
             self.zoom_start = self.zoom_end = float(parts[0]) / 100.0
 
     def get_image_dimensions(
-        self, config: configparser.RawConfigParser
+        self, config: CaseSensitiveConfigParser
     ) -> Tuple[int, int]:
         """Extract original image dimensions from PP3 file"""
         try:
@@ -102,7 +101,7 @@ class SimpleInterpolator:
             self._original_width = 6056
             self._original_height = 4032
             return 6056, 4032
-        except:
+        except Exception:
             # Default to common Nikon Z6 dimensions if not found
             click.echo(
                 "Warning: Could not read image dimensions from PP3, using defaults"
@@ -274,7 +273,7 @@ class SimpleInterpolator:
 
     def parse_pp3(
         self, path: Path
-    ) -> Tuple[configparser.RawConfigParser, float, float, float]:
+    ) -> Tuple[CaseSensitiveConfigParser, float, float, float]:
         """Parse PP3 file and validate values"""
         config = CaseSensitiveConfigParser()
         config.read(path, encoding="utf-8")
@@ -321,24 +320,21 @@ class SimpleInterpolator:
         if not pp3_files:
             return
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = self.directory / f"rawtherapee-timelapse_{timestamp}"
-        backup_dir.mkdir(exist_ok=True)
-
-        click.echo(f"Backing up {len(pp3_files)} PP3 files to {backup_dir.name}/")
+        click.echo(f"Backing up {len(pp3_files)} PP3 files...")
         for pp3 in pp3_files:
-            shutil.copy2(pp3, backup_dir / pp3.name)
+            backup_path = pp3.with_suffix(".pp3.backup")
+            shutil.copy2(pp3, backup_path)
 
     def write_pp3(
         self,
-        config: configparser.RawConfigParser,
+        config: CaseSensitiveConfigParser,
         temp: float,
         green: float,
         comp: float,
         path: Path,
         frame_index: int,
         total_frames: int,
-    ) -> configparser.RawConfigParser:
+    ) -> CaseSensitiveConfigParser:
         """Write PP3 file with interpolated values and crop settings"""
 
         new_config = copy.deepcopy(config)
@@ -440,9 +436,6 @@ class SimpleInterpolator:
                     cfg, t, g, c = self.parse_pp3(pp3)
                     # Apply crop to keyframe PP3 files
                     frame_idx = nef_to_idx[nef_name]
-                    progress = (
-                        frame_idx / (len(nef_files) - 1) if len(nef_files) > 1 else 0
-                    )
                     updated_cfg = self.write_pp3(
                         cfg, t, g, c, pp3, frame_idx, len(nef_files)
                     )
@@ -480,6 +473,9 @@ class SimpleInterpolator:
             click.echo(
                 f"   Frame {kf['idx']:4d}: T={kf['temp']} G={kf['green']:.3f} C={kf['comp']:+.2f}"
             )
+
+        # ask user for confirmation
+        click.confirm("Continue?", abort=True)
 
         # Process each frame
         created = 0

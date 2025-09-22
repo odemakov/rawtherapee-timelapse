@@ -2,6 +2,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+
 from rawtherapee_timelapse.cli import SimpleInterpolator
 
 
